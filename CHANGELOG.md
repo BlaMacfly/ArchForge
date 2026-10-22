@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0 — 2026-10-22
+
+- **Application de bureau** : ArchForge ouvre sa propre fenêtre (titre, icône, sans barre d'adresse ni
+  console) et y affiche l'interface par la vue web du système (WebView2 sous Windows, WebKit sous Linux et
+  macOS), comme Keira3 dans Electron. Le navigateur n'est plus utilisé.
+- Fermeture de la fenêtre : confirmation s'il reste des modifications non enregistrées.
+- Erreurs de démarrage affichées dans une boîte de dialogue.
+- Liens vers d'autres sites ouverts dans le navigateur du système.
+- Options `--browser` (interface dans le navigateur, si la vue web manque) et `--serve` (sans rien ouvrir) ;
+  `--no-browser` reste accepté.
+- Écran de connexion : la colonne latérale vide n'apparaît plus.
+
 ## 0.1.1 — 2026-10-22
 
 - Lancement d'un double-clic sous Windows : en cas d'erreur, la fenêtre reste ouverte et affiche le message

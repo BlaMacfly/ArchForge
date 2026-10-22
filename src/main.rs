@@ -1,13 +1,17 @@
 //! ArchForge : éditeur de la base de données d'ArchCore.
 //!
-//! Un seul exécutable : il sert l'interface (embarquée) sur 127.0.0.1 et ouvre le navigateur. L'interface
-//! parle à MariaDB par l'API de `api.rs` ; toute requête qu'elle produit est affichée avant d'être exécutée
-//! ou ajoutée à la couche de contenu d'ArchCore.
+//! Un seul exécutable : il sert l'interface (embarquée) sur 127.0.0.1 et l'affiche dans sa propre fenêtre
+//! (`window.rs`). L'interface parle à MariaDB par l'API de `api.rs` ; toute requête qu'elle produit est
+//! affichée avant d'être exécutée ou ajoutée à la couche de contenu d'ArchCore.
+
+// Application fenêtrée : pas de console sous Windows (gardée en débogage pour les journaux).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod api;
 mod archcore;
 mod content;
 mod db;
+mod window;
 
 use anyhow::{bail, Result};
 use std::net::SocketAddr;
@@ -21,19 +25,27 @@ Utilisation : archforge [options]
   --archcore <dossier>   dépôt ArchCore (config/world.conf, content/) ; par défaut, le dossier courant
                          s'il contient config/world.conf, sinon la variable ARCHCORE_DIR
   --port <n>             port local de l'interface (8787 par défaut, sinon le premier libre après)
-  --no-browser           ne pas ouvrir le navigateur
+  --browser              afficher l'interface dans le navigateur plutôt que dans la fenêtre d'ArchForge
+  --serve                servir l'interface sans rien ouvrir (accès par http://127.0.0.1:<port>/)
   -h, --help             cette aide
 ";
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Window,
+    Browser,
+    Serve,
+}
 
 struct Args {
     archcore: Option<PathBuf>,
     port: u16,
     port_explicit: bool,
-    browser: bool,
+    mode: Mode,
 }
 
 fn parse_args() -> Result<Args> {
-    let mut args = Args { archcore: None, port: 8787, port_explicit: false, browser: true };
+    let mut args = Args { archcore: None, port: 8787, port_explicit: false, mode: Mode::Window };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -43,7 +55,9 @@ fn parse_args() -> Result<Args> {
                 args.port = p;
                 args.port_explicit = true;
             }
-            "--no-browser" => args.browser = false,
+            "--browser" => args.mode = Mode::Browser,
+            // --no-browser : nom de la version 0.1.
+            "--serve" | "--no-browser" => args.mode = Mode::Serve,
             "-h" | "--help" => {
                 print!("{USAGE}");
                 std::process::exit(0);
@@ -54,34 +68,30 @@ fn parse_args() -> Result<Args> {
     Ok(args)
 }
 
-fn open_browser(url: &str) {
-    let result = if cfg!(target_os = "windows") {
-        std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn()
+/// Ouvre une adresse dans le navigateur du système (liens externes, mode --browser).
+pub fn open_browser(url: &str) {
+    let mut command = if cfg!(target_os = "windows") {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", "", url]);
+        c
     } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).spawn()
+        let mut c = std::process::Command::new("open");
+        c.arg(url);
+        c
     } else {
-        std::process::Command::new("xdg-open").arg(url).spawn()
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(url);
+        c
     };
-    if result.is_err() {
+    #[cfg(windows)]
+    {
+        // Sans fenêtre de console éphémère pour « cmd ».
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    if command.spawn().is_err() {
         println!("Ouvrez {url} dans votre navigateur.");
     }
-}
-
-/// Vrai si la console n'appartient qu'à ArchForge : lancé d'un double-clic, la fenêtre se fermerait avec
-/// le programme, avant qu'on ait pu lire un message d'erreur.
-#[cfg(windows)]
-fn own_console() -> bool {
-    extern "system" {
-        fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
-    }
-    let mut list = [0u32; 2];
-    // SAFETY : la liste a la taille annoncée ; la fonction n'écrit pas au-delà.
-    unsafe { GetConsoleProcessList(list.as_mut_ptr(), list.len() as u32) == 1 }
-}
-
-#[cfg(not(windows))]
-fn own_console() -> bool {
-    false
 }
 
 /// Une instance d'ArchForge répond-elle déjà sur ce port ?
@@ -114,52 +124,88 @@ async fn bind(port: u16, explicit: bool) -> Result<tokio::net::TcpListener> {
     bail!("les ports {port} à {last} sont déjà utilisés ({e}) : en choisir un autre avec --port");
 }
 
-async fn run(args: Args) -> Result<()> {
+fn run(args: Args) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     let archcore = archcore::locate(args.archcore.clone());
     match &archcore {
         Some(dir) => println!("Dépôt ArchCore : {}", dir.display()),
         None => println!("Aucun dépôt ArchCore trouvé (--archcore) : connexion à saisir, couche de contenu désactivée."),
     }
 
-    // Un double-clic de trop : ArchForge tourne déjà, on rouvre simplement sa page.
+    // Dans le navigateur, un lancement de trop rouvre simplement la page de l'instance qui tourne.
     let wanted = SocketAddr::from(([127, 0, 0, 1], args.port));
-    if archforge_at(wanted).await {
+    if args.mode == Mode::Browser && runtime.block_on(archforge_at(wanted)) {
         let url = format!("http://{wanted}/");
         println!("ArchForge tourne déjà sur {url} : ouverture de la page.");
-        if args.browser {
-            open_browser(&url);
-        }
+        open_browser(&url);
         return Ok(());
     }
 
-    let state = api::AppState::new(archcore);
-    let listener = bind(args.port, args.port_explicit).await?;
+    let listener = runtime.block_on(bind(args.port, args.port_explicit))?;
     let url = format!("http://{}/", listener.local_addr()?);
+    let router = api::router(api::AppState::new(archcore));
     println!("ArchForge écoute sur {url}");
-    println!("Laisser cette fenêtre ouverte pendant l'utilisation ; Ctrl+C ou fermer la fenêtre pour arrêter.");
-    if args.browser {
+
+    if args.mode == Mode::Window {
+        // Le serveur tourne en tâche de fond ; la fenêtre occupe le fil principal jusqu'à sa fermeture.
+        runtime.spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        return window::run(&url);
+    }
+
+    if args.mode == Mode::Browser {
         open_browser(&url);
     }
-    axum::serve(listener, api::router(state))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
+    println!("Ctrl+C pour arrêter.");
+    runtime.block_on(async {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async {
+                let _ = tokio::signal::ctrl_c().await;
+            })
+            .await
+    })?;
     Ok(())
 }
 
-#[tokio::main]
-async fn main() {
-    let result = match parse_args() {
-        Ok(args) => run(args).await,
-        Err(e) => Err(e),
-    };
-    if let Err(e) = result {
-        eprintln!("Erreur : {e:#}");
-        if own_console() {
-            eprintln!("\nAppuyer sur Entrée pour fermer.");
-            let _ = std::io::stdin().read_line(&mut String::new());
-        }
-        std::process::exit(1);
+/// Sous Windows, une application fenêtrée n'a pas de console : lancée depuis un terminal, elle s'attache à
+/// celui-ci pour que --help et les messages s'y affichent.
+#[cfg(windows)]
+fn attach_parent_console() {
+    extern "system" {
+        fn AttachConsole(process: u32) -> i32;
     }
+    // SAFETY : appel sans pointeur ; ATTACH_PARENT_PROCESS = (DWORD)-1.
+    unsafe {
+        AttachConsole(u32::MAX);
+    }
+}
+
+fn main() {
+    #[cfg(windows)]
+    attach_parent_console();
+    let args = match parse_args() {
+        Ok(args) => args,
+        Err(e) => fatal(&e, Mode::Window),
+    };
+    let mode = args.mode;
+    if let Err(e) = run(args) {
+        fatal(&e, mode);
+    }
+}
+
+/// Message d'erreur dans le terminal, et dans une boîte de dialogue quand ArchForge a été lancé sans
+/// terminal (double-clic).
+fn fatal(error: &anyhow::Error, mode: Mode) -> ! {
+    let message = format!("{error:#}");
+    eprintln!("Erreur : {message}");
+    if mode == Mode::Window {
+        rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("ArchForge")
+            .set_description(&message)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+    }
+    std::process::exit(1);
 }

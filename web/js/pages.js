@@ -66,7 +66,7 @@ export async function connectionPage(container, onConnected) {
         h('h3', {}, 'Connexion à MariaDB'),
         defaults.archcore ? h('p.muted', {}, `Valeurs lues dans config/world.conf de ${defaults.archcore}`) : h('p.muted', {}, 'Lancer ArchForge avec --archcore <dépôt ArchCore> pour reprendre sa configuration et activer la couche de contenu.'),
         grid,
-        h('label.check', {}, remember, ' Mémoriser le mot de passe dans ce navigateur'),
+        h('label.check', {}, remember, ' Mémoriser le mot de passe sur ce poste'),
         error,
         h('div.toolbar', {}, h('button.btn.primary', { onclick: connect }, 'Se connecter')),
       ),

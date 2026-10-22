@@ -25,6 +25,11 @@ use tokio::sync::RwLock;
 #[folder = "web/"]
 struct Assets;
 
+/// Fichier embarqué de l'interface (l'icône de la fenêtre vient de là).
+pub fn asset_bytes(path: &str) -> Option<Vec<u8>> {
+    Assets::get(path).map(|f| f.data.into_owned())
+}
+
 pub struct AppState {
     archcore: Option<PathBuf>,
     db: RwLock<Option<Db>>,

@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Éditeur de la base de données d'<a href="https://github.com/BlaMacfly/ArchCore">ArchCore</a>, l'émulateur de serveur ArchLord</b><br>
-  Rust · MariaDB · interface web locale · Windows, Linux, macOS
+  Application de bureau · Rust · MariaDB · Windows, Linux, macOS
 </p>
 
 ArchForge crée et modifie le contenu du monde d'ArchCore sans écrire de SQL : créatures et leurs
@@ -38,7 +38,7 @@ monorepo Nx, `mysql2` (avec tunnel SSH), `squel` pour construire le SQL, SQLite 
 
 | Keira3 (AzerothCore) | ArchForge (ArchCore) |
 |---|---|
-| Electron + Angular, un installeur par système | **un seul exécutable Rust** (comme `archcore`) qui sert l'interface embarquée sur `127.0.0.1` et ouvre le navigateur ; interface en JavaScript sans étape de compilation |
+| Electron + Angular, un installeur par système | **un seul exécutable Rust** (comme `archcore`) qui ouvre sa propre fenêtre : l'interface (JavaScript sans étape de compilation, embarquée) y est affichée par la vue web du système (WebView2, WebKit) — le principe d'Electron, sans embarquer de navigateur |
 | connexion saisie à la main | reprise de `config/world.conf` du dépôt ArchCore (`--archcore`) : hôte, compte, noms des quatre bases |
 | SQL exécuté sur la base | exécuté **dans une transaction** (tout ou rien) — *et* : **« Ajouter au contenu »** écrit la requête dans `content/<AAAAMMJJHHMM>_<sujet>.sql`. `archcore import` régénère la base monde depuis le client : sans cette couche, toute modification serait perdue au prochain import |
 | colonnes typées | ArchLord garde ses tables d'origine en **JSON** (`raw`, `data`, `spec`, `consts`) : les clés utiles sont des champs expliqués, les autres restent modifiables ; le « diff » n'écrit que les clés changées (`JSON_SET` / `JSON_REMOVE`), si bien qu'un fichier de contenu ne recopie pas les données du client |
@@ -70,24 +70,36 @@ Les éditeurs :
 Prérequis : une base ArchCore (MariaDB) créée par `archcore db-init` et remplie par `archcore import`.
 
 Télécharger l'archive de son système sur la page [Releases](https://github.com/BlaMacfly/ArchForge/releases)
-(Windows x64, Linux x64, macOS Apple Silicon) et lancer `archforge`. Ou compiler soi-même, avec
-[Rust](https://rustup.rs) 1.85 ou plus :
+(Windows x64, Linux x64, macOS Apple Silicon) et lancer `archforge` : la fenêtre d'ArchForge s'ouvre sur
+l'écran de connexion. Placé dans le dossier d'ArchCore (à côté de `config/`), il en reprend la configuration ;
+sinon, lui donner le dossier par `--archcore` (raccourci, terminal).
+
+| Système | Vue web utilisée |
+|---|---|
+| Windows 10 et 11 | Microsoft Edge WebView2, déjà installé avec Windows 11 et les Windows 10 à jour ([installeur](https://go.microsoft.com/fwlink/p/?LinkId=2124703) sinon) |
+| Linux | WebKitGTK 4.1 : paquet `webkit2gtk-4.1` (Arch, CachyOS), `libwebkit2gtk-4.1-0` (Debian, Ubuntu) |
+| macOS | WebKit du système |
+
+Ou compiler soi-même, avec [Rust](https://rustup.rs) 1.85 ou plus (sous Linux, avec les paquets de
+développement `webkit2gtk-4.1` et `gtk3`) :
 
 ```bash
 cargo build --release
-target/release/archforge --archcore ../ArchCore      # ouvre http://127.0.0.1:8787/
+target/release/archforge --archcore ../ArchCore
 ```
 
 | Option | Rôle |
 |---|---|
 | `--archcore <dossier>` | dépôt ArchCore : connexion lue dans `config/world.conf`, couche de contenu dans `content/`. Par défaut : le dossier courant s'il contient `config/world.conf`, sinon la variable `ARCHCORE_DIR` |
-| `--port <n>` | port local (8787 par défaut ; s'il est pris, le premier libre parmi les vingt suivants) |
-| `--no-browser` | ne pas ouvrir le navigateur |
+| `--port <n>` | port local de l'API (8787 par défaut ; s'il est pris, le premier libre parmi les vingt suivants) |
+| `--browser` | afficher l'interface dans le navigateur plutôt que dans la fenêtre d'ArchForge (si la vue web manque) |
+| `--serve` | servir l'interface sans rien ouvrir, par exemple sur un serveur joint par un tunnel SSH |
 
-Sous Windows, un double-clic sur `archforge.exe` suffit : une fenêtre de console s'ouvre (la laisser ouverte
-pendant l'utilisation) et le navigateur affiche la page de connexion. Si ArchForge tourne déjà, un nouveau
-lancement rouvre simplement sa page ; en cas d'erreur, la fenêtre reste ouverte pour qu'on puisse la lire.
-L'exécutable porte l'icône d'ArchForge (`assets/archforge.ico`, intégrée par `build.rs`).
+Une erreur au démarrage s'affiche dans une boîte de dialogue. La fermeture de la fenêtre demande
+confirmation s'il reste des modifications non enregistrées. Les réglages de l'interface (connexions récentes,
+filtres) sont gardés dans `%LOCALAPPDATA%\ArchForge` (Windows), `~/.local/share/archforge` (Linux) ou
+`~/Library/Application Support/ArchForge` (macOS). L'exécutable Windows porte l'icône d'ArchForge
+(`assets/archforge.ico`, intégrée par `build.rs`).
 
 ## 4. Utilisation
 
@@ -108,7 +120,7 @@ l'exécution ; un point orange signale un onglet modifié, et quitter l'entrée 
 
 ## 5. Sécurité
 
-L'API exécute le SQL qu'on lui envoie : elle n'écoute que sur `127.0.0.1`, refuse tout en-tête `Host` non local
+La fenêtre parle à une API locale, qui exécute le SQL qu'on lui envoie : elle n'écoute que sur `127.0.0.1`, refuse tout en-tête `Host` non local
 (rattachement DNS) et exige une clé tirée à chaque lancement, glissée dans la page (une autre page ouverte dans
 le navigateur ne peut pas la lire). La couche de contenu refuse `CREATE`, `ALTER`, `DROP`, `TRUNCATE`… (le
 schéma passe par `sql/migrations/` d'ArchCore) et n'écrit que des fichiers `AAAAMMJJHHMM_sujet.sql`.
@@ -117,7 +129,8 @@ schéma passe par `sql/migrations/` d'ArchCore) et n'écrit que des fichiers `AA
 
 ```text
 src/
-  main.rs        options, lancement du serveur local, ouverture du navigateur
+  main.rs        options, lancement du serveur local, erreurs de démarrage
+  window.rs      fenêtre de l'application (tao + wry) : vue web, icône, liens externes, fermeture
   api.rs         API (/api/…), clé et contrôle de l'hôte, fichiers de l'interface embarqués
   db.rs          MariaDB : alias des bases, lectures paramétrées, scripts en transaction
   content.rs     couche de contenu : noms, instructions refusées, ajout aux fichiers
@@ -152,7 +165,10 @@ connexion par `world.conf`, tableau de bord, les douze éditeurs et leurs recher
 (sélecteur d'objet, insertion avec clé stable et `MAX(id) + 1`), modification d'une clé JSON (`JSON_SET` d'une
 seule clé), création d'un objet par copie (deux tables), boutique (mise à jour, suppression, ajout), fonction de
 PNJ modifiée en place, ajout à un fichier de `content/`, transaction annulée sur erreur, refus d'un `DROP` et
-d'un appel sans clé. Non essayé : relecture des modifications par un serveur ArchCore redémarré.
+d'un appel sans clé. Fenêtre de bureau (Windows 11, version 0.2.0) : ouverture par l'exécutable seul, titre
+et icône, écran de connexion repris de `world.conf`, fermeture par la croix, erreur de port affichée en boîte
+de dialogue. Non essayés : la fenêtre sous Linux et macOS (seule leur compilation est vérifiée par la CI), et
+la relecture des modifications par un serveur ArchCore redémarré.
 
 ## Publier une version
 

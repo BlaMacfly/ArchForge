@@ -102,5 +102,10 @@ window.addEventListener('hashchange', route);
 window.addEventListener('beforeunload', (e) => {
   if (editor?.dirty) e.preventDefault();
 });
+// Fenêtre d'ArchForge (window.rs) : la croix demande à la page, qui confirme avant de fermer.
+window.archforgeRequestClose = async () => {
+  if (editor?.dirty && !(await confirmDialog('Fermer ArchForge', 'Des modifications ne sont pas enregistrées. Fermer quand même ?', 'Fermer'))) return;
+  window.ipc?.postMessage('close');
+};
 window.addEventListener('unhandledrejection', (e) => toast(e.reason?.message ?? String(e.reason), 'error', 8000));
 route();

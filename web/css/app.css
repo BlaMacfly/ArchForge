@@ -55,6 +55,7 @@ code, .code, pre { font-family: var(--mono); font-size: 12.5px; }
 .spacer { flex: 1; }
 
 /* --- barre latérale --- */
+#sidebar[hidden] { display: none; }
 #sidebar { width: 236px; flex: none; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 14px 16px; font-size: 18px; font-weight: 700; color: var(--text); letter-spacing: 0.04em; border-bottom: 1px solid var(--line); }
 .brand img { width: 40px; height: 40px; border-radius: 8px; }
