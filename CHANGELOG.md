@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 — 2026-10-22
+
+- Lancement d'un double-clic sous Windows : en cas d'erreur, la fenêtre reste ouverte et affiche le message
+  (elle se fermait aussitôt).
+- Port 8787 déjà pris : ArchForge prend le premier port libre parmi les vingt suivants ; si c'est une autre
+  instance d'ArchForge qui l'occupe, sa page est simplement rouverte.
+
 ## 0.1.0 — 2026-10-22
 
 Première version.

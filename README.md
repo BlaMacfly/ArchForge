@@ -81,10 +81,13 @@ target/release/archforge --archcore ../ArchCore      # ouvre http://127.0.0.1:87
 | Option | Rôle |
 |---|---|
 | `--archcore <dossier>` | dépôt ArchCore : connexion lue dans `config/world.conf`, couche de contenu dans `content/`. Par défaut : le dossier courant s'il contient `config/world.conf`, sinon la variable `ARCHCORE_DIR` |
-| `--port <n>` | port local (8787 par défaut) |
+| `--port <n>` | port local (8787 par défaut ; s'il est pris, le premier libre parmi les vingt suivants) |
 | `--no-browser` | ne pas ouvrir le navigateur |
 
-Sous Windows, l'exécutable porte l'icône d'ArchForge (`assets/archforge.ico`, intégrée par `build.rs`).
+Sous Windows, un double-clic sur `archforge.exe` suffit : une fenêtre de console s'ouvre (la laisser ouverte
+pendant l'utilisation) et le navigateur affiche la page de connexion. Si ArchForge tourne déjà, un nouveau
+lancement rouvre simplement sa page ; en cas d'erreur, la fenêtre reste ouverte pour qu'on puisse la lire.
+L'exécutable porte l'icône d'ArchForge (`assets/archforge.ico`, intégrée par `build.rs`).
 
 ## 4. Utilisation
 
