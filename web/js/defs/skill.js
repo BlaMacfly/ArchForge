@@ -1,0 +1,120 @@
+// Compétences : modèle (SKILLTEMPLATE.ini), nature (SKILL_SPEC.txt) et valeurs par niveau (SKILL_CONST.txt).
+
+import { localizedTab } from './common.js';
+
+const LEVEL_KEYS = [
+  { key: 'require_level', label: 'Niveau requis', type: 'int', server: true },
+  { key: 'require_point', label: 'Points requis', type: 'int', server: true },
+  { key: 'skill_cost', label: "Coût d'apprentissage", type: 'int', server: true },
+  { key: 'skill_upgrade_cost', label: "Coût d'amélioration", type: 'int', server: true },
+  { key: 'cost_mp', label: 'Coût en PM', type: 'int', server: true },
+  { key: 'cost_hp', label: 'Coût en PV', type: 'int', server: true },
+  { key: 'cast_time', label: "Temps d'incantation", type: 'int', server: true },
+  { key: 'recast_time', label: 'Temps de recharge', type: 'int', server: true },
+  { key: 'duration', label: 'Durée', type: 'int', server: true },
+  { key: 'damage_a', label: 'Dégâts', type: 'int', server: true },
+  { key: 'damage_a_PERCENT', label: 'Dégâts (%)', type: 'int', server: true },
+  { key: 'critical', label: 'Critique', type: 'int', server: true },
+  { key: 'stun_time', label: "Durée d'étourdissement", type: 'int', server: true },
+  { key: 'special_status', label: 'État spécial', type: 'int', server: true },
+  { key: 'special_status_rate', label: "Chance d'état", type: 'int', server: true },
+  { key: 'max_target_num', label: 'Cibles max.', type: 'int', server: true },
+  { key: 'skill_rate', label: 'Taux', type: 'int', server: true },
+];
+
+export default {
+  route: 'skill',
+  label: 'Compétences',
+  singular: 'Compétence',
+  icon: '✨',
+  group: 'Personnages',
+  db: 'world',
+  table: 'skill_template',
+  key: { column: 'tid', label: 'TID' },
+  ref: 'skill',
+  create: { nextId: 'SELECT COALESCE(MAX(tid), 0) + 1 AS n FROM skill_template' },
+  search: {
+    from: 'skill_template t LEFT JOIN skill_spec s ON s.tid = t.tid',
+    columns: [
+      { expr: 't.tid', name: 'tid', label: 'TID' },
+      { expr: 't.name', name: 'name', label: 'Nom' },
+      { expr: "JSON_VALUE(s.spec, '$.range')", name: 'range', label: 'Portée' },
+      { expr: '(SELECT COUNT(*) FROM skill_level l WHERE l.tid = t.tid)', name: 'levels', label: 'Niveaux' },
+    ],
+    filters: [
+      { name: 'tid', label: 'TID', expr: 't.tid', op: '=' },
+      { name: 'name', label: 'Nom', expr: 't.name', op: 'like' },
+    ],
+    order: 't.tid',
+  },
+  tabs: [
+    {
+      id: 'template',
+      label: 'Modèle',
+      kind: 'single',
+      main: true,
+      table: 'skill_template',
+      key: (id) => ({ tid: Number(id) }),
+      json: ['raw'],
+      defaults: () => ({ name: 'Nouvelle compétence', raw: {} }),
+      fields: [
+        { name: 'tid', label: 'TID', type: 'int', readonly: true },
+        { name: 'name', label: 'Nom', type: 'text', server: true },
+        { name: 'raw', label: 'Clés de SKILLTEMPLATE.ini', type: 'json' },
+      ],
+    },
+    {
+      id: 'spec',
+      label: 'Nature',
+      kind: 'single',
+      table: 'skill_spec',
+      key: (id) => ({ tid: Number(id) }),
+      json: ['spec'],
+      help: 'SKILL_SPEC.txt : cible, portée, attribut… (colonnes non vides).',
+      defaults: () => ({ name: 'Nouvelle compétence', spec: {} }),
+      fields: [
+        { name: 'tid', label: 'TID', type: 'int', readonly: true },
+        { name: 'name', label: 'Nom', type: 'text', server: true },
+        {
+          name: 'spec',
+          label: 'Colonnes de SKILL_SPEC.txt',
+          type: 'json',
+          sections: [
+            {
+              title: 'Lues par le serveur',
+              keys: [
+                { key: 'target', label: 'Cible', type: 'int', server: true },
+                { key: 'range', label: 'Portée', type: 'int', server: true },
+                { key: 'attribute', label: 'Attribut', type: 'int', server: true },
+                { key: 'melee_attack', label: 'Attaque au corps à corps', type: 'int', server: true },
+                { key: 'auto_attack', label: 'Attaque automatique', type: 'int', server: true },
+                { key: 'upgradable', label: 'Améliorable', type: 'int', server: true },
+                { key: 'area_r', label: 'Rayon de zone', type: 'int', server: true },
+                { key: 'area_f1', label: 'Zone (avant 1)', type: 'int', server: true },
+                { key: 'area_f2', label: 'Zone (avant 2)', type: 'int', server: true },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: 'levels',
+      label: 'Niveaux',
+      kind: 'multi',
+      table: 'skill_level',
+      parent: (id) => ({ tid: Number(id) }),
+      order: 'level',
+      rowKey: ['tid', 'level'],
+      json: ['consts'],
+      copy: true,
+      help: 'SKILL_CONST.txt : valeurs de chaque niveau (bouton « Modifier » pour les colonnes).',
+      newRow: (id, tab, last) => ({ tid: Number(id), level: (last?.level ?? 0) + 1, consts: last ? { ...last.consts } : {} }),
+      columns: [
+        { name: 'level', label: 'Niveau', type: 'int', server: true },
+        { name: 'consts', label: 'Valeurs', type: 'json', sections: [{ title: 'Lues par le serveur', keys: LEVEL_KEYS }] },
+      ],
+    },
+    localizedTab(['skill_name']),
+  ],
+};

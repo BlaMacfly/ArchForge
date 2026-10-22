@@ -1,0 +1,23 @@
+[package]
+name = "archforge"
+description = "ArchForge : éditeur de la base de données d'ArchCore (émulateur ArchLord), sur le modèle de Keira3"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+authors = ["BlaMacfly"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/BlaMacfly/ArchForge"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "signal"] }
+mysql_async = { version = "0.34", default-features = false, features = ["minimal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+rust-embed = "8"
+mime_guess = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[profile.release]
+lto = "thin"

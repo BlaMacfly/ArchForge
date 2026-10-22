@@ -1,0 +1,150 @@
+// PNJ (npc.ini) et boutiques (npctradeitemlist.txt).
+
+import { localizedTab } from './common.js';
+
+export const npc = {
+  route: 'npc',
+  label: 'PNJ',
+  singular: 'PNJ',
+  icon: '🧙',
+  group: 'Créatures et PNJ',
+  db: 'world',
+  table: 'npc_spawn',
+  key: { column: 'id', label: 'Identifiant' },
+  ref: 'npc',
+  help: "PNJ placés dans le monde : modèle, position et fonctions (dialogue, boutique, quêtes…) telles que dans npc.ini.",
+  // Les sections de npc.ini du client vont jusqu'à quelques milliers : un PNJ créé ici prend un numéro à part.
+  create: { nextId: 'SELECT GREATEST(COALESCE(MAX(id), 0) + 1, 100000) AS n FROM npc_spawn' },
+  search: {
+    from: 'npc_spawn',
+    columns: [
+      { expr: 'id', name: 'id', label: 'ID' },
+      { expr: 'name', name: 'name', label: 'Nom' },
+      { expr: 'tid', name: 'tid', label: 'Modèle (TID)' },
+      { expr: 'ROUND(pos_x)', name: 'x', label: 'X' },
+      { expr: 'ROUND(pos_z)', name: 'z', label: 'Z' },
+    ],
+    filters: [
+      { name: 'id', label: 'ID', expr: 'id', op: '=' },
+      { name: 'name', label: 'Nom', expr: 'name', op: 'like', placeholder: 'Merchant, Darryl…' },
+      { name: 'tid', label: 'Modèle (TID)', expr: 'tid', op: '=' },
+    ],
+    order: 'id',
+  },
+  tabs: [
+    {
+      id: 'npc',
+      label: 'PNJ',
+      kind: 'single',
+      main: true,
+      table: 'npc_spawn',
+      key: (id) => ({ id: Number(id) }),
+      json: ['raw'],
+      defaults: (id) => ({
+        tid: 584,
+        name: '<Merchant> Nouveau',
+        pos_x: 0,
+        pos_y: 0,
+        pos_z: 0,
+        degree_x: 0,
+        degree_y: 0,
+        raw: [
+          ['ModuleData1', 'AgpmCharacter'],
+          ['Name', '<Merchant> Nouveau'],
+          ['TID', '584'],
+          ['ModuleData2', 'ApmEventManager'],
+          ['Function', '9'],
+          ['EventID', String(1073741824 + Number(id))],
+          ['CondStart', '0'],
+          ['CondEnd', '0'],
+          ['NPCTradeStart', '0'],
+          ['Template', '104'],
+          ['NPCTradeEnd', '0'],
+          ['EnumEnd', '0'],
+        ],
+      }),
+      fields: [
+        { name: 'id', label: 'ID', type: 'int', readonly: true, help: 'Section [N] de npc.ini ; le CID en jeu en dérive (plage des PNJ, à partir de 0x40000000).' },
+        { name: 'tid', label: 'Modèle', type: 'int', ref: 'creature', server: true, help: 'Modèle de personnage (apparence).' },
+        { name: 'name', label: 'Nom', type: 'text', server: true, help: '« <Titre> Nom » : le titre entre chevrons est traduit par la table des titres ou les traductions npc_name.' },
+        { name: 'pos_x', label: 'X', type: 'float', server: true, group: 'Position' },
+        { name: 'pos_y', label: 'Y (hauteur)', type: 'float', server: true, group: 'Position' },
+        { name: 'pos_z', label: 'Z', type: 'float', server: true, group: 'Position' },
+        { name: 'degree_x', label: 'Angle X', type: 'float', server: true, group: 'Position' },
+        { name: 'degree_y', label: 'Orientation', type: 'float', server: true, group: 'Position', help: 'Rotation autour de l’axe vertical, en degrés.' },
+        {
+          name: 'raw',
+          label: 'Fonctions (npc.ini)',
+          type: 'pairs',
+          server: true,
+          help: "Chaque « Function » ouvre un événement : 21 dialogue (Template = dialogue), 9 boutique (Template = liste de npc_trade_list), 27 quêtes (QuestGroupID = groupe de quest_group), 28 enchères. L'ordre des paires compte.",
+        },
+      ],
+    },
+    localizedTab(['npc_name']),
+  ],
+};
+
+export const shop = {
+  route: 'shop',
+  label: 'Boutiques',
+  singular: 'Boutique',
+  icon: '🪙',
+  group: 'Objets',
+  db: 'world',
+  table: 'npc_trade_list',
+  key: { column: 'template_id', label: 'Modèle de boutique' },
+  ref: 'shop',
+  help: "Listes d'objets vendus par les PNJ (npctradeitemlist.txt). Un PNJ y renvoie par le « Template » de sa fonction 9.",
+  create: { nextId: 'SELECT COALESCE(MAX(template_id), 0) + 1 AS n FROM npc_trade_list' },
+  search: {
+    from: 'npc_trade_list',
+    groupBy: 'template_id',
+    columns: [
+      { expr: 'template_id', name: 'template_id', label: 'Modèle' },
+      { expr: 'COUNT(*)', name: 'items', label: 'Objets' },
+      { expr: "GROUP_CONCAT(tid ORDER BY idx SEPARATOR ', ')", name: 'tids', label: 'TID des objets' },
+    ],
+    filters: [
+      { name: 'template_id', label: 'Modèle', expr: 'template_id', op: '=' },
+      { name: 'tid', label: 'Contient l’objet (TID)', expr: 'tid', op: '=' },
+    ],
+    order: 'template_id',
+  },
+  tabs: [
+    {
+      id: 'items',
+      label: 'Articles',
+      kind: 'multi',
+      table: 'npc_trade_list',
+      parent: (id) => ({ template_id: Number(id) }),
+      order: 'idx',
+      rowKey: ['template_id', 'idx'],
+      copy: true,
+      help: "Ordre d'affichage (idx), objet et quantité vendue par achat. Le prix vient de l'objet (npc_price).",
+      newRow: (id, tab) => ({ template_id: Number(id), idx: Math.max(-1, ...tab.rows.map((r) => Number(r.after.idx))) + 1, tid: 0, count: 1 }),
+      columns: [
+        { name: 'idx', label: 'Ordre', type: 'int', server: true },
+        { name: 'tid', label: 'Objet', type: 'int', ref: 'item', server: true },
+        { name: 'count', label: 'Quantité', type: 'int', server: true },
+      ],
+    },
+    {
+      id: 'sellers',
+      label: 'Vendeurs',
+      kind: 'list',
+      help: 'PNJ dont une fonction 9 désigne cette boutique.',
+      empty: 'Aucun PNJ ne vend cette liste.',
+      query: (id) => [
+        // Espaces facultatifs : MariaDB en ajoute quand il réécrit le JSON (JSON_SET).
+        `SELECT id, name, tid FROM npc_spawn WHERE raw REGEXP CONCAT('"NPCTradeStart", ?"0"[]], ?[[]"Template", ?"', ?, '"[]]') ORDER BY id`,
+        [String(id)],
+      ],
+      columns: [
+        { name: 'id', label: 'PNJ', ref: 'npc' },
+        { name: 'name', label: 'Nom' },
+        { name: 'tid', label: 'Modèle', ref: 'creature' },
+      ],
+    },
+  ],
+};

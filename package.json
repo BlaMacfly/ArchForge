@@ -1,0 +1,9 @@
+{
+  "name": "archforge-web",
+  "private": true,
+  "type": "module",
+  "description": "Interface d'ArchForge : aucune dépendance, ce fichier ne sert qu'aux tests.",
+  "scripts": {
+    "test": "node --test tests/sql.test.mjs"
+  }
+}
