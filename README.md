@@ -67,8 +67,11 @@ Les éditeurs :
 
 ## 3. Installation et lancement
 
-Prérequis : [Rust](https://rustup.rs) 1.85 ou plus et une base ArchCore (MariaDB) créée par `archcore db-init`
-et remplie par `archcore import`.
+Prérequis : une base ArchCore (MariaDB) créée par `archcore db-init` et remplie par `archcore import`.
+
+Télécharger l'archive de son système sur la page [Releases](https://github.com/BlaMacfly/ArchForge/releases)
+(Windows x64, Linux x64, macOS Apple Silicon) et lancer `archforge`. Ou compiler soi-même, avec
+[Rust](https://rustup.rs) 1.85 ou plus :
 
 ```bash
 cargo build --release
@@ -147,6 +150,14 @@ connexion par `world.conf`, tableau de bord, les douze éditeurs et leurs recher
 seule clé), création d'un objet par copie (deux tables), boutique (mise à jour, suppression, ajout), fonction de
 PNJ modifiée en place, ajout à un fichier de `content/`, transaction annulée sur erreur, refus d'un `DROP` et
 d'un appel sans clé. Non essayé : relecture des modifications par un serveur ArchCore redémarré.
+
+## Publier une version
+
+1. Mettre à jour `version` dans `Cargo.toml` (puis `cargo build` pour `Cargo.lock`) et ajouter une section
+   `## X.Y.Z — date` en tête de `CHANGELOG.md`.
+2. Pousser une étiquette : `git tag vX.Y.Z && git push origin vX.Y.Z`. Le workflow `Release` vérifie que
+   l'étiquette correspond à `Cargo.toml`, compile pour Windows, Linux et macOS et publie les trois archives
+   avec les notes du changelog.
 
 ## Licence
 

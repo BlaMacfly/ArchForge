@@ -1,0 +1,81 @@
+# Publication : pousser une étiquette `v1.2.3` (égale à la version de Cargo.toml) compile ArchForge pour
+# Windows, Linux et macOS et crée une version GitHub avec les trois archives et les notes de CHANGELOG.md.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Version de Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "L'étiquette $GITHUB_REF_NAME ne correspond pas à la version $version de Cargo.toml" >&2
+            exit 1
+          fi
+
+  build:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+            exe: archforge.exe
+          - os: ubuntu-latest
+            name: linux-x64
+            exe: archforge
+          - os: macos-latest
+            name: macos-arm64
+            exe: archforge
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compilation
+        run: cargo build --release --locked
+      - name: Archive
+        shell: bash
+        run: |
+          dir="ArchForge-$GITHUB_REF_NAME-${{ matrix.name }}"
+          mkdir "$dir"
+          cp "target/release/${{ matrix.exe }}" README.md LICENSE CHANGELOG.md "$dir/"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "$dir.zip" "$dir" > /dev/null
+          else
+            tar czf "$dir.tar.gz" "$dir"
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            ArchForge-*.zip
+            ArchForge-*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Notes de version (CHANGELOG.md)
+        run: |
+          awk -v v="${GITHUB_REF_NAME#v}" '
+            /^## / { if (found) exit; if (index($0, v)) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > notes.md
+      - name: Version GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "ArchForge $GITHUB_REF_NAME" --notes-file notes.md
