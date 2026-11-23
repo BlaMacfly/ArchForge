@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Serialize)]
 pub struct ContentFile {
@@ -188,11 +188,6 @@ impl ContentDir {
         out.write_all(block.as_bytes())?;
         Ok(name)
     }
-}
-
-/// Dossier `content/` d'un dépôt ArchCore, s'il en a un.
-pub fn find_in(archcore: &Path) -> PathBuf {
-    archcore.join("content")
 }
 
 #[cfg(test)]

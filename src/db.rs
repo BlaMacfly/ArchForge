@@ -1,22 +1,27 @@
 //! Connexion à MariaDB et exécution des requêtes de l'éditeur.
 //!
-//! Les bases d'ArchCore sont désignées par un alias (`auth`, `characters`, `world`, `logs`) : l'interface
-//! n'écrit jamais le nom réel d'une base dans ses requêtes, si bien que le SQL qu'elle produit se rejoue
-//! tel quel ailleurs (couche de contenu, autre serveur).
+//! Les bases d'ArchCore sont désignées par un alias (`auth`, `characters`, `world`, `logs`) : l'éditeur
+//! n'écrit jamais le nom réel d'une base dans ses requêtes, si bien que le SQL qu'il produit se rejoue tel
+//! quel ailleurs (couche de contenu, autre serveur).
+//!
+//! À la connexion, ArchForge lit le schéma réel (`information_schema`) : colonnes, types, clés et
+//! commentaires. Une colonne ajoutée par une migration d'ArchCore apparaît donc dans l'éditeur, expliquée par
+//! son commentaire, même si ArchForge ne la connaît pas encore.
 
 use anyhow::{anyhow, bail, Context, Result};
-use mysql_async::consts::ColumnType;
-use mysql_async::prelude::*;
-use mysql_async::{Column, Conn, OptsBuilder, Pool, PoolConstraints, PoolOpts, Row, Value};
+use mysql::consts::ColumnType;
+use mysql::prelude::*;
+use mysql::{Column, OptsBuilder, Pool, PoolConstraints, PoolOpts, PooledConn, Value};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
+use std::collections::HashMap;
+
+use crate::sql::Row;
 
 /// Lignes renvoyées au plus par un jeu de résultats (l'éditeur pagine ses recherches).
 const MAX_ROWS: usize = 5000;
-/// Au-delà, un entier perd sa précision dans un nombre JavaScript : il part en texte.
-const JS_SAFE_INT: i128 = 9_007_199_254_740_991;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct Settings {
     pub host: String,
     pub port: u16,
@@ -27,6 +32,9 @@ pub struct Settings {
     pub world: String,
     pub logs: String,
 }
+
+/// Bases d'ArchCore, dans l'ordre d'affichage.
+pub const ALIASES: [(&str, &str); 4] = [("world", "Monde"), ("auth", "Comptes"), ("characters", "Personnages"), ("logs", "Journaux")];
 
 impl Settings {
     /// Nom réel de la base désignée par un alias.
@@ -45,13 +53,44 @@ impl Settings {
     }
 }
 
-pub struct Db {
-    pool: Pool,
-    pub settings: Settings,
-    pub version: String,
+/// Une colonne du schéma réel.
+#[derive(Clone, Debug)]
+pub struct ColumnInfo {
+    pub name: String,
+    /// Type SQL sans taille (`int`, `varchar`, `longtext`…).
+    pub data_type: String,
+    pub nullable: bool,
+    pub comment: String,
 }
 
-#[derive(Debug, Serialize)]
+impl ColumnInfo {
+    pub fn is_integer(&self) -> bool {
+        matches!(self.data_type.as_str(), "tinyint" | "smallint" | "mediumint" | "int" | "bigint" | "year")
+    }
+    pub fn is_real(&self) -> bool {
+        matches!(self.data_type.as_str(), "float" | "double" | "decimal")
+    }
+    pub fn is_binary(&self) -> bool {
+        self.data_type.contains("blob") || self.data_type.contains("binary")
+    }
+}
+
+/// Schéma réel des bases : alias → table → colonnes (dans l'ordre de la table).
+#[derive(Clone, Debug, Default)]
+pub struct Schema {
+    pub tables: HashMap<String, HashMap<String, Vec<ColumnInfo>>>,
+}
+
+impl Schema {
+    pub fn columns(&self, alias: &str, table: &str) -> Option<&[ColumnInfo]> {
+        self.tables.get(alias)?.get(table).map(|v| v.as_slice())
+    }
+    pub fn has_table(&self, alias: &str, table: &str) -> bool {
+        self.columns(alias, table).is_some()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct ResultSet {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<Json>>,
@@ -59,60 +98,116 @@ pub struct ResultSet {
     pub truncated: bool,
 }
 
+impl ResultSet {
+    /// Lignes sous forme de `{ colonne: valeur }`.
+    pub fn maps(&self) -> Vec<Row> {
+        self.rows.iter().map(|r| self.columns.iter().cloned().zip(r.iter().cloned()).collect()).collect()
+    }
+}
+
+/// État d'une base pour le tableau de bord.
+#[derive(Clone, Debug, Default)]
+pub struct BaseInfo {
+    pub alias: String,
+    pub schema: String,
+    pub exists: bool,
+    pub tables: Vec<(String, u64)>,
+    pub last_migration: Option<String>,
+    pub migrations: usize,
+}
+
+pub struct Db {
+    pool: Pool,
+    pub settings: Settings,
+    pub version: String,
+    pub schema: Schema,
+}
+
 impl Db {
-    pub async fn connect(settings: Settings) -> Result<Db> {
-        let constraints = PoolConstraints::new(0, 4).expect("bornes du pool");
-        let opts = OptsBuilder::default()
-            .ip_or_hostname(settings.host.clone())
+    pub fn connect(settings: Settings) -> Result<Db> {
+        let opts = OptsBuilder::new()
+            .ip_or_hostname(Some(settings.host.clone()))
             .tcp_port(settings.port)
             .user(Some(settings.user.clone()))
             .pass(Some(settings.password.clone()))
-            .pool_opts(PoolOpts::default().with_constraints(constraints));
-        let pool = Pool::new(opts);
-        let mut conn = pool.get_conn().await.context("connexion à MariaDB impossible")?;
-        let version: Option<String> = conn.query_first("SELECT VERSION()").await?;
-        drop(conn);
-        Ok(Db { pool, settings, version: version.unwrap_or_default() })
+            .tcp_connect_timeout(Some(std::time::Duration::from_secs(5)))
+            .pool_opts(PoolOpts::default().with_constraints(PoolConstraints::new(0, 4).expect("bornes du pool")));
+        let pool = Pool::new(opts).context("connexion à MariaDB impossible")?;
+        let mut conn = pool.get_conn().context("connexion à MariaDB impossible")?;
+        let version: Option<String> = conn.query_first("SELECT VERSION()")?;
+        let mut db = Db { pool, settings, version: version.unwrap_or_default(), schema: Schema::default() };
+        db.schema = db.load_schema(&mut conn)?;
+        if !db.schema.has_table("world", "item_data") {
+            bail!(
+                "la base monde « {} » ne contient pas les tables d'ArchCore : lancer `archcore db-init` puis `archcore import`",
+                db.settings.world
+            );
+        }
+        Ok(db)
     }
 
-    pub async fn disconnect(self) {
-        let _ = self.pool.disconnect().await;
+    fn load_schema(&self, conn: &mut PooledConn) -> Result<Schema> {
+        let mut schema = Schema::default();
+        for (alias, _) in ALIASES {
+            let Ok(name) = self.settings.schema(alias) else { continue };
+            let cols: Vec<(String, String, String, String, String)> = conn.exec(
+                "SELECT table_name, column_name, data_type, is_nullable, column_comment \
+                 FROM information_schema.columns WHERE table_schema = ? ORDER BY table_name, ordinal_position",
+                (name,),
+            )?;
+            let tables = schema.tables.entry(alias.to_string()).or_default();
+            for (table, column, data_type, nullable, comment) in cols {
+                tables.entry(table).or_default().push(ColumnInfo {
+                    name: column,
+                    data_type: data_type.to_lowercase(),
+                    nullable: nullable == "YES",
+                    comment,
+                });
+            }
+        }
+        Ok(schema)
     }
 
-    async fn conn(&self, alias: &str) -> Result<Conn> {
+    fn conn(&self, alias: &str) -> Result<PooledConn> {
         let schema = self.settings.schema(alias)?;
-        let mut conn = self.pool.get_conn().await?;
-        conn.query_drop(format!("USE `{}`", schema.replace('`', "``"))).await?;
+        let mut conn = self.pool.get_conn()?;
+        conn.query_drop(format!("USE `{}`", schema.replace('`', "``")))?;
         Ok(conn)
     }
 
-    /// Exécute une requête de lecture paramétrée (une seule instruction, `?` positionnels).
-    pub async fn select(&self, alias: &str, sql: &str, params: &[Json]) -> Result<ResultSet> {
-        let mut conn = self.conn(alias).await?;
+    /// Requête de lecture paramétrée (une seule instruction, `?` positionnels).
+    pub fn select(&self, alias: &str, sql: &str, params: &[Json]) -> Result<ResultSet> {
+        let mut conn = self.conn(alias)?;
         let params: Vec<Value> = params.iter().map(json_to_param).collect::<Result<_>>()?;
-        let mut result = conn.exec_iter(sql, params).await?;
-        let columns = result.columns().unwrap_or_else(|| Vec::<Column>::new().into());
-        let rows: Vec<Row> = result.collect().await?;
+        let params = if params.is_empty() { mysql::Params::Empty } else { mysql::Params::Positional(params) };
+        let mut result = conn.exec_iter(sql, params)?;
+        let Some(set) = result.iter() else { return Ok(ResultSet::default()) };
+        let columns: Vec<Column> = set.columns().as_ref().to_vec();
+        let rows = set.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(to_result_set(&columns, rows, 0))
     }
 
-    /// Exécute un script (plusieurs instructions possibles). En écriture, le script passe dans une
-    /// transaction : tout ou rien, comme `archcore content` pour la couche de contenu.
-    pub async fn script(&self, alias: &str, sql: &str, transaction: bool) -> Result<Vec<ResultSet>> {
-        let mut conn = self.conn(alias).await?;
+    pub fn select_maps(&self, alias: &str, sql: &str, params: &[Json]) -> Result<Vec<Row>> {
+        Ok(self.select(alias, sql, params)?.maps())
+    }
+
+    /// Script (plusieurs instructions possibles). En écriture, il passe dans une transaction : tout ou rien,
+    /// comme `archcore content` pour la couche de contenu.
+    pub fn script(&self, alias: &str, sql: &str, transaction: bool) -> Result<Vec<ResultSet>> {
+        let mut conn = self.conn(alias)?;
         if transaction {
-            conn.query_drop("START TRANSACTION").await?;
+            conn.query_drop("START TRANSACTION")?;
         }
-        match run_script(&mut conn, sql).await {
+        match run_script(&mut conn, sql) {
             Ok(sets) => {
                 if transaction {
-                    conn.query_drop("COMMIT").await?;
+                    conn.query_drop("COMMIT")?;
                 }
                 Ok(sets)
             }
             Err(err) => {
                 if transaction {
-                    let _ = conn.query_drop("ROLLBACK").await;
+                    let _ = conn.query_drop("ROLLBACK");
                 }
                 Err(err)
             }
@@ -120,69 +215,55 @@ impl Db {
     }
 
     /// État des bases : nombre de lignes par table et versions du schéma.
-    pub async fn overview(&self) -> Result<Json> {
-        let mut conn = self.pool.get_conn().await?;
-        let mut bases = serde_json::Map::new();
-        for alias in ["auth", "characters", "world", "logs"] {
+    pub fn overview(&self) -> Result<Vec<BaseInfo>> {
+        let mut conn = self.pool.get_conn()?;
+        let mut out = Vec::new();
+        for (alias, _) in ALIASES {
             let Ok(schema) = self.settings.schema(alias) else { continue };
-            let tables: Vec<(String, Option<u64>)> = conn
-                .exec(
-                    "SELECT table_name, table_rows FROM information_schema.tables \
-                     WHERE table_schema = ? ORDER BY table_name",
-                    (schema,),
-                )
-                .await?;
-            let migrations: Vec<(String, String)> = if tables.iter().any(|(t, _)| t == "schema_migrations") {
-                conn.query(format!(
-                    "SELECT id, CAST(applied_at AS CHAR) FROM `{}`.schema_migrations ORDER BY id",
-                    schema.replace('`', "``")
-                ))
-                .await?
-            } else {
-                Vec::new()
-            };
-            bases.insert(
-                alias.to_string(),
-                json!({
-                    "schema": schema,
-                    "exists": !tables.is_empty(),
-                    "tables": tables.iter().map(|(t, n)| json!({ "name": t, "rows": n })).collect::<Vec<_>>(),
-                    "migrations": migrations.iter().map(|(id, at)| json!({ "id": id, "applied_at": at })).collect::<Vec<_>>(),
-                }),
-            );
+            let tables: Vec<(String, Option<u64>)> = conn.exec(
+                "SELECT table_name, table_rows FROM information_schema.tables WHERE table_schema = ? ORDER BY table_name",
+                (schema,),
+            )?;
+            let (mut last_migration, mut migrations) = (None, 0);
+            if tables.iter().any(|(t, _)| t == "schema_migrations") {
+                let ids: Vec<String> =
+                    conn.query(format!("SELECT id FROM `{}`.schema_migrations ORDER BY id", schema.replace('`', "``")))?;
+                migrations = ids.len();
+                last_migration = ids.last().cloned();
+            }
+            out.push(BaseInfo {
+                alias: alias.to_string(),
+                schema: schema.to_string(),
+                exists: !tables.is_empty(),
+                tables: tables.into_iter().map(|(t, n)| (t, n.unwrap_or(0))).collect(),
+                last_migration,
+                migrations,
+            });
         }
-        Ok(Json::Object(bases))
+        Ok(out)
     }
 }
 
-async fn run_script(conn: &mut Conn, sql: &str) -> Result<Vec<ResultSet>> {
-    let mut result = conn.query_iter(sql).await?;
+fn run_script(conn: &mut PooledConn, sql: &str) -> Result<Vec<ResultSet>> {
+    let mut result = conn.query_iter(sql)?;
     let mut sets = Vec::new();
-    while !result.is_empty() {
-        let columns = result.columns().unwrap_or_else(|| Vec::<Column>::new().into());
-        let rows: Vec<Row> = result.collect().await?;
-        let affected = result.affected_rows();
+    while let Some(set) = result.iter() {
+        let columns: Vec<Column> = set.columns().as_ref().to_vec();
+        let affected = set.affected_rows();
+        let rows = set.collect::<std::result::Result<Vec<_>, _>>()?;
         sets.push(to_result_set(&columns, rows, affected));
     }
     Ok(sets)
 }
 
-fn to_result_set(columns: &[Column], rows: Vec<Row>, affected: u64) -> ResultSet {
+fn to_result_set(columns: &[Column], rows: Vec<mysql::Row>, affected: u64) -> ResultSet {
     let truncated = rows.len() > MAX_ROWS;
     let rows = rows
         .into_iter()
         .take(MAX_ROWS)
-        .map(|row| {
-            let values = row.unwrap();
-            values.into_iter().zip(columns).map(|(v, c)| value_to_json(v, c)).collect()
-        })
+        .map(|row| row.unwrap().into_iter().zip(columns).map(|(v, c)| value_to_json(v, c)).collect())
         .collect();
-    ResultSet {
-        columns: columns.iter().map(|c| c.name_str().into_owned()).collect(),
-        rows,
-        affected,
-        truncated,
-    }
+    ResultSet { columns: columns.iter().map(|c| c.name_str().into_owned()).collect(), rows, affected, truncated }
 }
 
 fn is_integer(t: ColumnType) -> bool {
@@ -205,19 +286,16 @@ fn is_binary(c: &Column) -> bool {
         )
 }
 
-fn int_to_json(n: i128) -> Json {
-    if n.abs() > JS_SAFE_INT {
-        Json::String(n.to_string())
-    } else {
-        json!(n as i64)
-    }
+/// Marque d'une valeur binaire (non modifiable) dans une ligne.
+pub fn binary_len(v: &Json) -> Option<u64> {
+    v.as_object().filter(|o| o.len() == 1).and_then(|o| o.get("binary")).and_then(|n| n.as_u64())
 }
 
 fn value_to_json(value: Value, column: &Column) -> Json {
     match value {
         Value::NULL => Json::Null,
-        Value::Int(n) => int_to_json(n as i128),
-        Value::UInt(n) => int_to_json(n as i128),
+        Value::Int(n) => json!(n),
+        Value::UInt(n) => json!(n),
         Value::Float(f) => json!(f),
         Value::Double(f) => json!(f),
         Value::Bytes(bytes) => {
@@ -227,11 +305,17 @@ fn value_to_json(value: Value, column: &Column) -> Json {
             let text = String::from_utf8_lossy(&bytes).into_owned();
             let t = column.column_type();
             if is_integer(t) {
-                if let Ok(n) = text.parse::<i128>() {
-                    return int_to_json(n);
+                if let Ok(n) = text.parse::<i64>() {
+                    return json!(n);
+                }
+                if let Ok(n) = text.parse::<u64>() {
+                    return json!(n);
                 }
             } else if is_real(t) {
                 if let Ok(f) = text.parse::<f64>() {
+                    if f.fract() == 0.0 && f.abs() < 1e15 {
+                        return json!(f as i64);
+                    }
                     return json!(f);
                 }
             }
@@ -282,8 +366,9 @@ mod tests {
     }
 
     #[test]
-    fn les_grands_entiers_partent_en_texte() {
-        assert_eq!(int_to_json(42), json!(42));
-        assert_eq!(int_to_json(18_446_744_073_709_551_615), json!("18446744073709551615"));
+    fn marque_des_valeurs_binaires() {
+        assert_eq!(binary_len(&json!({"binary": 578})), Some(578));
+        assert_eq!(binary_len(&json!({"binary": 578, "x": 1})), None);
+        assert_eq!(binary_len(&json!("binary")), None);
     }
 }
